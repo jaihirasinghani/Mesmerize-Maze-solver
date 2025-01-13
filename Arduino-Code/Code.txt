@@ -1,0 +1,254 @@
+#include <QTRSensors.h>
+
+// Pin Definitions
+#define PWMA_PIN 6            // ENA connected to D7
+#define PWMB_PIN 5            // ENB connected to D6
+#define AIN1_PIN 7            // IN1 connected to D8
+#define AIN2_PIN 4            // IN2 connected to D4
+#define BIN1_PIN 3            // IN3 connected to D3
+#define BIN2_PIN 2            // IN4 connected to D2
+#define STBY_PIN 12           // Standby pin connected to D5
+#define BUTTON_CALIBRATION_PIN 8
+#define BUTTON_START_PIN 11   // Connected to D11
+
+
+#define kp 0.83 //0.098
+#define kd 3.4 //0.98
+#define ki 0.0 //0.02
+
+#define basespeedR 80 //150//70//80
+#define basespeedL 80 //150
+#define maxspeedR 110 //200
+#define maxspeedL 110 //200//100//110
+
+#define thresholdBlack 700
+#define thresholdWhite 300 //300
+
+#define turnpwm 170 //230
+#define straightpwm 80 //250
+#define slowpwm 70
+
+#define b1 13 //calibrate
+#define b2 2 //LSRB
+#define b3 12 //RSLB
+
+void setup() {
+    qtr.setTypeRC();
+    qtr.setSensorPins((const uint8_t[]){ A0, A1, A2, A3, A4, A5, 10, 9 }, SensorCount);
+    
+    pinOutput(AIN1);
+    pinOutput(AIN2);
+    pinOutput(PWMA);
+    pinOutput(BIN1);
+    pinOutput(BIN2);
+    pinOutput(PWMB);
+    
+    pinInput(b1);
+    pinInput(b2);
+    pinInput(b3);
+    
+    delay(1000);
+    while (digitalRead(b1) == LOW) {}
+    delay(1000);
+    
+    for (uint16_t i = 0; i < 100; i++) {
+        motor1.drive(70);
+        motor2.drive(-70);
+        qtr.calibrate();
+    }
+    
+    for (int i = 0; i <= 100; i++) {
+        motor1.drive(-70);
+        motor2.drive(70);
+        qtr.calibrate();
+    }
+    
+    motor1.brake();
+    motor2.brake();
+    delay(200);
+    
+    while (1) {
+        int s1 = digitalRead(b2);
+        int s2 = digitalRead(b3);
+        
+        if (s1 == HIGH) {
+            hand = 1; // LH Rule
+            break;
+        }
+        
+        if (s2 == HIGH) {
+            hand = 2; // RH Rule
+            break;
+        }
+    }
+    
+    delay(500);
+}
+
+void PID_line() {
+    uint16_t position = qtr.readLineBlack(values);
+    int error = 3500 - position;
+    int P = error;
+    int I = I + error;
+    int D = error - lastError;
+    lastError = error;
+    int motorSpeed = P * kp + I * ki + D * kd;
+    int rightMotorSpeed = basespeedR + motorSpeed;
+    int leftMotorSpeed = basespeedL - motorSpeed;
+    
+    rightMotorSpeed = constrain(rightMotorSpeed, 0, maxspeedR);
+    leftMotorSpeed = constrain(leftMotorSpeed, 0, maxspeedL);
+    
+    mspeed(rightMotorSpeed, leftMotorSpeed);
+}
+
+void mspeed(int posa, int posb) {
+    motor1.drive(posa);
+    motor2.drive(posb);
+}
+
+void turn(unsigned char dir) {
+    switch (dir) {
+        case 'L':
+            mspeed(80, -80);
+            delay(200);
+            qtr.readLineBlack(values);
+            while (values[3] > thresholdBlack || values[4] > thresholdBlack) {
+                mspeed(80, -80);
+                qtr.readLineBlack(values);
+            }
+            while (values[4] < thresholdBlack) {
+                mspeed(80, -80);
+                qtr.readLineBlack(values);
+            }
+            break;
+            
+        case 'S':
+            delay(100);
+            while (values[3] > thresholdBlack && values[4] > thresholdBlack) {
+                mspeed(80, -80);
+                qtr.readLineBlack(values);
+            }
+            while (values[4] < thresholdBlack) {
+                mspeed(80, -80);
+                qtr.readLineBlack(values);
+            }
+            break;
+            
+        case 'R':
+            mspeed(-80, 80);
+            delay(200);
+            qtr.readLineBlack(values);
+            while (values[3] > thresholdBlack || values[4] > thresholdBlack) {
+                mspeed(-80, 80);
+                qtr.readLineBlack(values);
+            }
+            while (values[4] < thresholdBlack) {
+                mspeed(-80, 80);
+                qtr.readLineBlack(values);
+            }
+            break;
+            
+        case 'B':
+            mspeed(-80, 80);
+            delay(200);
+            qtr.readLineBlack(values);
+            while (values[5] < thresholdBlack && values[4] < thresholdBlack) {
+                mspeed(-80, 80);
+                qtr.readLineBlack(values);
+            }
+            break;
+    }
+}
+
+unsigned char select_turnL(unsigned char found_left, unsigned char found_straight, unsigned char found_right) {
+    if (found_left) return 'L';
+    if (found_straight) return 'S';
+    if (found_right) return 'R';
+    return 'B';
+}
+
+unsigned char select_turnR(char found_right, char found_straight, char found_left) {
+    if (found_right) return 'R';
+    if (found_straight) return 'S';
+    if (found_left) return 'L';
+    return 'B';
+}
+
+void simplify_path() {
+    if (path_length < 3 || path[path_length - 2] != 'B') return;
+    
+    int total_angle = 0;
+    for (int p = 1; p <= 3; p++) {
+        switch (path[path_length - p]) {
+            case 'R': total_angle += 90; break;
+            case 'L': total_angle += 270; break;
+            case 'B': total_angle += 180; break;
+        }
+    }
+    
+    total_angle %= 360;
+    
+    switch (total_angle) {
+        case 0: path[path_length - 3] = 'S'; break;
+        case 90: path[path_length - 3] = 'R'; break;
+        case 180: path[path_length - 3] = 'B'; break;
+        case 270: path[path_length - 3] = 'L'; break;
+    }
+    
+    path_length -= 2;
+}
+
+void loop() {
+    while (1) {
+        while (1) {
+            PID_line();
+            qtr.readLineBlack(values);
+            
+            if (values[5] < thresholdWhite && values[4] < thresholdWhite && values[3] < thresholdWhite && values[2] < thresholdWhite) {
+                break; // Dead end
+            }
+            
+            if ((values[7] > thresholdBlack && values[6] > thresholdBlack) || (values[1] > thresholdBlack && values[0] > thresholdBlack)) {
+                break; // Intersection
+            }
+        }
+        
+        mspeed(0, 0);
+        delay(300);
+        
+        unsigned char found_left = 0, found_straight = 0, found_right = 0;
+        qtr.readLineBlack(values);
+        
+        if (values[0] > thresholdBlack && values[1] > thresholdBlack) {
+            found_left = 1;
+        }
+        
+        if (values[7] > thresholdBlack && values[6] > thresholdBlack) {
+            found_right = 1;
+        }
+        
+        mspeed(basespeedR, basespeedL);
+        delay(450);
+        mspeed(0, 0);
+        
+        qtr.readLineBlack(values);
+        if (values[1] > thresholdBlack || values[2] > thresholdBlack || values[3] > thresholdBlack || values[4] > thresholdBlack || values[5] > thresholdBlack || values[6] > thresholdBlack) {
+            found_straight = 1;
+        }
+        
+        mspeed(basespeedR, basespeedL);
+        delay(100);
+        mspeed(0, 0);
+        
+        char dir;
+        if (hand == 1) dir = select_turnL(found_left, found_straight, found_right);
+        else dir = select_turnR(found_right, found_straight, found_left);
+        
+        turn(dir);
+        mspeed(0, 0);
+        path[path_length] = dir;
+        path_length++;
+        simplify_path();
+    }
+}

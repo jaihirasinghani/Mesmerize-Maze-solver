@@ -261,5 +261,15 @@ Adding a display to show the path taken by the robot.
 
 Enhancing the PID control for smoother navigation.
 
+To include the licensing information in your GitHub repository, you can add the following text to your README.md file:
+
+
+---
+
+# License
+
+This project is licensed under the MIT License.
+
+You can find more details in the LICENSE file included in this repository.
 
 
